@@ -28,14 +28,42 @@ type customAnalyzer struct {
 	checkNoSpecialSymbols bool
 	checkNoSensitiveData  bool
 
-	configPath string
-	once       sync.Once
-	configErr  error
+	configPath   string
+	inlineConfig *Config
+	once         sync.Once
+	configErr    error
+}
+
+func NewAnalyzerWithConfig(cfg *Config) *analysis.Analyzer {
+	ca := newDefaultAnalyzer()
+	ca.inlineConfig = cfg
+	return &analysis.Analyzer{
+		Name: "loglint",
+		Doc:  "loglint checks for proper logging usage",
+		Run:  ca.run,
+		Requires: []*analysis.Analyzer{
+			inspect.Analyzer,
+		},
+	}
 }
 
 func NewAnalyzer() *analysis.Analyzer {
 	// ниже представлен базовый конфиг, который может быть переопределён через флаг -config
-	ca := &customAnalyzer{
+	ca := newDefaultAnalyzer()
+	a := &analysis.Analyzer{
+		Name: "loglint",
+		Doc:  "loglint checks for proper logging usage",
+		Run:  ca.run,
+		Requires: []*analysis.Analyzer{
+			inspect.Analyzer,
+		},
+	}
+	a.Flags.StringVar(&ca.configPath, "config", "", "path to loglint config file in YAML format")
+	return a
+}
+
+func newDefaultAnalyzer() *customAnalyzer {
+	return &customAnalyzer{
 		pkgs: map[string][]string{
 			"log/slog": {
 				"Debug", "DebugContext", "Error", "ErrorContext", "Info", "InfoContext", "Warn", "WarnContext",
@@ -51,20 +79,6 @@ func NewAnalyzer() *analysis.Analyzer {
 		checkNoSpecialSymbols: true,
 		checkNoSensitiveData:  true,
 	}
-	a := &analysis.Analyzer{
-		Name: "loglint",
-		Doc:  "loglint checks for proper logging usage",
-		Run:  ca.run,
-		Requires: []*analysis.Analyzer{
-			inspect.Analyzer,
-		},
-	}
-	a.Flags.StringVar(&ca.configPath, "config", "", "path to loglint config file in YAML format")
-	return a
-}
-
-func (ca *customAnalyzer) applyConfig() error {
-	return ca.applyConfigFrom(ca.configPath)
 }
 
 func (ca *customAnalyzer) applyConfigFrom(path string) error {
@@ -72,7 +86,11 @@ func (ca *customAnalyzer) applyConfigFrom(path string) error {
 	if err != nil {
 		return err
 	}
+	ca.applyConfigStruct(cfg)
+	return nil
+}
 
+func (ca *customAnalyzer) applyConfigStruct(cfg *Config) {
 	ca.checkLowercase = boolVal(cfg.Rules.Lowercase)
 	ca.checkEnglishOnly = boolVal(cfg.Rules.EnglishOnly)
 	ca.checkNoSpecialSymbols = boolVal(cfg.Rules.NoSpecialSymbols)
@@ -96,17 +114,24 @@ func (ca *customAnalyzer) applyConfigFrom(path string) error {
 	if len(cfg.Loggers) > 0 {
 		ca.pkgs = cfg.Loggers
 	}
-	return nil
 }
 
 func (ca *customAnalyzer) run(pass *analysis.Pass) (any, error) {
 	ca.once.Do(func() {
+		if ca.inlineConfig != nil {
+			ca.applyConfigStruct(ca.inlineConfig)
+			return
+		}
 		path := ca.configPath
 		if path == "" {
 			path = findConfig(pass)
 		}
 		if path != "" {
-			ca.configErr = ca.applyConfigFrom(path)
+			if err := ca.applyConfigFrom(path); err != nil && ca.configPath != "" {
+				if fallback := findConfig(pass); fallback != "" {
+					_ = ca.applyConfigFrom(fallback)
+				}
+			}
 		}
 	})
 	if ca.configErr != nil {
@@ -148,21 +173,28 @@ func (ca *customAnalyzer) run(pass *analysis.Pass) (any, error) {
 }
 
 func findConfig(pass *analysis.Pass) string {
-	if len(pass.Files) == 0 {
-		return ""
+	dirs := []string{}
+	if len(pass.Files) > 0 {
+		dirs = append(dirs, filepath.Dir(pass.Fset.Position(pass.Files[0].Pos()).Filename))
 	}
-	dir := filepath.Dir(pass.Fset.Position(pass.Files[0].Pos()).Filename)
-	for {
-		for _, name := range []string{".loglint.yml", ".loglint.yaml"} {
-			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-				return filepath.Join(dir, name)
+	if cwd, err := os.Getwd(); err == nil {
+		dirs = append(dirs, cwd)
+	}
+
+	for _, start := range dirs {
+		dir := start
+		for {
+			for _, name := range []string{".loglint.yml", ".loglint.yaml"} {
+				if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+					return filepath.Join(dir, name)
+				}
 			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
 	}
 	return ""
 }

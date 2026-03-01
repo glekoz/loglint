@@ -6,8 +6,18 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
+type RulesSettings struct {
+	Lowercase        *bool `json:"lowercase"`
+	EnglishOnly      *bool `json:"english_only"`
+	NoSpecialSymbols *bool `json:"no_special_symbols"`
+	NoSensitiveData  *bool `json:"no_sensitive_data"`
+}
+
 type Settings struct {
-	Config string `json:"config"`
+	Rules             RulesSettings `json:"rules"`
+	SensitiveKeywords []string      `json:"sensitive_keywords"`
+	KeywordsWhitelist []string      `json:"keywords_whitelist"`
+	SymbolsWhitelist  []string      `json:"symbols_whitelist"`
 }
 
 type loglintPlugin struct {
@@ -15,13 +25,18 @@ type loglintPlugin struct {
 }
 
 func (p *loglintPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
-	a := logcheck.NewAnalyzer()
-	if p.settings.Config != "" {
-		if err := a.Flags.Set("config", p.settings.Config); err != nil {
-			return nil, err
-		}
+	cfg := &logcheck.Config{
+		Rules: logcheck.RulesConfig{
+			Lowercase:        p.settings.Rules.Lowercase,
+			EnglishOnly:      p.settings.Rules.EnglishOnly,
+			NoSpecialSymbols: p.settings.Rules.NoSpecialSymbols,
+			NoSensitiveData:  p.settings.Rules.NoSensitiveData,
+		},
+		SensitiveKeywords: p.settings.SensitiveKeywords,
+		KeywordsWhitelist: p.settings.KeywordsWhitelist,
+		SymbolsWhitelist:  p.settings.SymbolsWhitelist,
 	}
-	return []*analysis.Analyzer{a}, nil
+	return []*analysis.Analyzer{logcheck.NewAnalyzerWithConfig(cfg)}, nil
 }
 
 func (p *loglintPlugin) GetLoadMode() string {
