@@ -56,12 +56,10 @@ Log messages and concatenated variables must not contain potentially sensitive i
 // ❌ Wrong
 log.Info("user password: " + password)
 log.Debug("api_key=" + apiKey)
-log.Info("token: " + token)
 
 // ✅ Correct
 log.Info("user authenticated successfully")
 log.Debug("api request completed")
-log.Info("token validated")
 ```
 
 ## Supported loggers
@@ -70,8 +68,6 @@ log.Info("token validated")
 |---------|---------|
 | `log/slog` | `Debug`, `DebugContext`, `Error`, `ErrorContext`, `Info`, `InfoContext`, `Warn`, `WarnContext` |
 | `go.uber.org/zap` | `Debug`, `DPanic`, `Error`, `Fatal`, `Info`, `Panic`, `Warn` |
-
-Custom loggers can be added via [config file](#configuration-file).
 
 ---
 
@@ -85,7 +81,7 @@ go install github.com/glekoz/loglint/cmd/loglint@latest
 
 ### As a golangci-lint plugin (Module Plugin System)
 
-golangci-lint supports the **Module Plugin System** which embeds your linter directly into a custom-built golangci-lint binary — no `.so` files, works on all platforms including Windows.
+golangci-lint supports the **Module Plugin System** which embeds your linter directly into a custom-built golangci-lint binary.
 
 **Requirements:** Go, git, `golangci-lint` installed.
 
@@ -94,29 +90,47 @@ golangci-lint supports the **Module Plugin System** which embeds your linter dir
 **1. Add `.custom-gcl.yml` to your project:**
 
 ```yaml
-version: v2.1.6   # your golangci-lint version
+version: v2.10.1   # your golangci-lint version
 
 plugins:
   - module: "github.com/glekoz/loglint"
     import: "github.com/glekoz/loglint/plugin"
-    version: v1.0.0   # or use `path: ./` for a local checkout
+    version: v0.1.3   # actual version
 ```
 
 **2. Configure `.golangci.yml`:**
 
 ```yaml
-linters-settings:
-  custom:
-    loglint:
-      type: "module"
-      description: Checks logging message conventions
-      original-url: github.com/glekoz/loglint
-      settings:
-        config: .loglint.yml   # optional: path to loglint config
+version: "2"
 
 linters:
+  default: none
   enable:
     - loglint
+  settings:
+    custom:
+      loglint:
+        type: "module"
+        description: Checks logging message conventions (lowercase, English-only, no special symbols, no sensitive data)
+        original-url: github.com/glekoz/loglint
+        settings:
+          rules:
+            lowercase: true
+            english_only: true
+            no_special_symbols: true
+            no_sensitive_data: true
+          sensitive_keywords:
+            - password
+            - secret
+            - token
+            - key
+            - credential
+            - auth
+            - login
+            - pass
+            - pwd
+          keywords_whitelist: []
+          symbols_whitelist: []
 ```
 
 **3. Build the custom binary (once, or after updating the plugin):**
@@ -136,13 +150,13 @@ golangci-lint custom
 
 ## Usage
 
-### Standalone
+### Standalone binary
 
 ```bash
-# Analyse a package
+# Analyse a package with default settings
 loglint ./...
 
-# With config file
+# With a config file
 loglint -loglint.config=.loglint.yml ./...
 ```
 
@@ -156,37 +170,30 @@ golangci-lint custom
 ./custom-gcl run ./...
 ```
 
-To pass the config file path to the plugin, set the `settings.config` key in `.golangci.yml`:
+Settings are specified **inline** inside `.golangci.yml` under `settings.custom.loglint.settings` — no separate config file is needed. See the full example in the [Installation](#as-a-golangci-lint-plugin-module-plugin-system) section above.
 
-```yaml
-linters-settings:
-  custom:
-    loglint:
-      type: "module"
-      description: Checks logging message conventions
-      original-url: github.com/glekoz/loglint
-      settings:
-        config: .loglint.yml
-```
+> **Note:** the `loggers` option (overriding which packages and methods are checked) is only available when using the standalone binary with a `.loglint.yml` config file.
 
 ---
 
-## Configuration file
+## Configuration
 
-Create a `.loglint.yml` file in the root of your project.
+### `.loglint.yml` — for standalone binary
+
+Pass the path with `-loglint.config=.loglint.yml`.
 
 ```yaml
 rules:
-  # Rule 1: log message must start with a lowercase letter (default: true)
+  # Log message must start with a lowercase letter (default: true)
   lowercase: true
 
-  # Rule 2: log message must be in English only (default: true)
+  # Log message must be in English only (default: true)
   english_only: true
 
-  # Rule 3: log message must not contain special symbols or emoji (default: true)
+  # Log message must not contain special symbols or emoji (default: true)
   no_special_symbols: true
 
-  # Rule 4: log message must not contain sensitive data (default: true)
+  # Log message must not contain sensitive data (default: true)
   no_sensitive_data: true
 
 # Override the list of sensitive keywords (default list shown below)
@@ -234,6 +241,45 @@ loggers:
     - Info
     - Error
     - Warn
+```
+
+### `.golangci.yml` — for golangci-lint plugin
+
+All loglint settings are placed inline under `settings.custom.loglint.settings`.
+
+```yaml
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - loglint
+  settings:
+    custom:
+      loglint:
+        type: "module"
+        description: Checks logging message conventions (lowercase, English-only, no special symbols, no sensitive data)
+        original-url: github.com/glekoz/loglint
+        settings:
+          rules:
+            lowercase: true
+            english_only: true
+            no_special_symbols: true
+            no_sensitive_data: true
+          sensitive_keywords:
+            - password
+            - secret
+            - token
+            - key
+            - credential
+            - auth
+            - login
+            - pass
+            - pwd
+          keywords_whitelist: []
+          symbols_whitelist:
+            - "-"
+            - "."
 ```
 
 All keys are optional. If a key is omitted, the default value is used.
