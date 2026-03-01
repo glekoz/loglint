@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"golang.org/x/tools/go/analysis"
@@ -19,10 +20,20 @@ type customAnalyzer struct {
 	sensitiveKeywords []string
 	kwWhitelist       []string
 	symbolsWhitelist  []rune
+
+	checkLowercase        bool
+	checkEnglishOnly      bool
+	checkNoSpecialSymbols bool
+	checkNoSensitiveData  bool
+
+	configPath string
+	once       sync.Once
+	configErr  error
 }
 
-func NewAnalyzer( /*параметры для настройки анализатора*/ ) *analysis.Analyzer {
-	ca := customAnalyzer{
+func NewAnalyzer() *analysis.Analyzer {
+	// ниже представлен базовый конфиг, который может быть переопределён через флаг -config
+	ca := &customAnalyzer{
 		pkgs: map[string][]string{
 			"log/slog": {
 				"Debug", "DebugContext", "Error", "ErrorContext", "Info", "InfoContext", "Warn", "WarnContext",
@@ -31,10 +42,14 @@ func NewAnalyzer( /*параметры для настройки анализа�
 				"Debug", "DPanic", "Error", "Fatal", "Info", "Panic", "Warn",
 			},
 		},
-		sensitiveKeywords: []string{"password", "secret", "token", "key", "credential", "auth", "login", "pass", "pwd"},
-		kwWhitelist:       []string{"passwordik"},
+		sensitiveKeywords:     []string{"password", "secret", "token", "key", "credential", "auth", "login", "pass", "pwd"},
+		kwWhitelist:           make([]string, 0),
+		checkLowercase:        true,
+		checkEnglishOnly:      true,
+		checkNoSpecialSymbols: true,
+		checkNoSensitiveData:  true,
 	}
-	return &analysis.Analyzer{
+	a := &analysis.Analyzer{
 		Name: "loglint",
 		Doc:  "loglint checks for proper logging usage",
 		Run:  ca.run,
@@ -42,9 +57,52 @@ func NewAnalyzer( /*параметры для настройки анализа�
 			inspect.Analyzer,
 		},
 	}
+	a.Flags.StringVar(&ca.configPath, "config", "", "path to loglint config file in YAML format")
+	return a
 }
 
-func (ca customAnalyzer) run(pass *analysis.Pass) (any, error) {
+func (ca *customAnalyzer) applyConfig() error {
+	cfg, err := loadConfig(ca.configPath)
+	if err != nil {
+		return err
+	}
+
+	ca.checkLowercase = boolVal(cfg.Rules.Lowercase)
+	ca.checkEnglishOnly = boolVal(cfg.Rules.EnglishOnly)
+	ca.checkNoSpecialSymbols = boolVal(cfg.Rules.NoSpecialSymbols)
+	ca.checkNoSensitiveData = boolVal(cfg.Rules.NoSensitiveData)
+
+	if len(cfg.SensitiveKeywords) > 0 {
+		ca.sensitiveKeywords = cfg.SensitiveKeywords
+	}
+	if len(cfg.KeywordsWhitelist) > 0 {
+		ca.kwWhitelist = cfg.KeywordsWhitelist
+	}
+	if len(cfg.SymbolsWhitelist) > 0 {
+		ca.symbolsWhitelist = ca.symbolsWhitelist[:0]
+		for _, s := range cfg.SymbolsWhitelist {
+			for _, r := range s {
+				ca.symbolsWhitelist = append(ca.symbolsWhitelist, r)
+				break
+			}
+		}
+	}
+	if len(cfg.Loggers) > 0 {
+		ca.pkgs = cfg.Loggers
+	}
+	return nil
+}
+
+func (ca *customAnalyzer) run(pass *analysis.Pass) (any, error) {
+	ca.once.Do(func() {
+		if ca.configPath != "" {
+			ca.configErr = ca.applyConfig()
+		}
+	})
+	if ca.configErr != nil {
+		return nil, ca.configErr
+	}
+
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	nodeFilter := []ast.Node{
 		(*ast.CallExpr)(nil),
@@ -79,7 +137,7 @@ func (ca customAnalyzer) run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-func (ca customAnalyzer) isValidLogger(o types.Object) bool {
+func (ca *customAnalyzer) isValidLogger(o types.Object) bool {
 	pkg := o.Pkg()
 	if pkg == nil {
 		return false
@@ -93,7 +151,7 @@ func (ca customAnalyzer) isValidLogger(o types.Object) bool {
 	return slices.Contains(methods, o.Name())
 }
 
-func (ca customAnalyzer) checkArgument(pass *analysis.Pass, expr ast.Expr, isFirst *bool) {
+func (ca *customAnalyzer) checkArgument(pass *analysis.Pass, expr ast.Expr, isFirst *bool) {
 	switch v := expr.(type) {
 	case *ast.BasicLit:
 		if v.Kind == token.STRING {
@@ -114,7 +172,7 @@ func (ca customAnalyzer) checkArgument(pass *analysis.Pass, expr ast.Expr, isFir
 	}
 }
 
-func (ca customAnalyzer) checkStringLiteral(pass *analysis.Pass, lit *ast.BasicLit, isFirst *bool) {
+func (ca *customAnalyzer) checkStringLiteral(pass *analysis.Pass, lit *ast.BasicLit, isFirst *bool) {
 	value, err := strconv.Unquote(lit.Value)
 	if err != nil {
 		return
@@ -138,16 +196,18 @@ func (ca customAnalyzer) checkStringLiteral(pass *analysis.Pass, lit *ast.BasicL
 		}
 
 		if unicode.IsLetter(r) {
-			pass.Reportf(
-				lit.Pos()+token.Pos(i),
-				"log message contains non-English character: %q", string(r),
-			)
+			if ca.checkEnglishOnly {
+				pass.Reportf(
+					lit.Pos()+token.Pos(i),
+					"log message contains non-English character: %q", string(r),
+				)
+			}
 			return
 		}
 		badsymbols = append(badsymbols, i)
 	}
 
-	if len(badsymbols) > 0 {
+	if len(badsymbols) > 0 && ca.checkNoSpecialSymbols {
 		newline := make([]byte, 0, len(value)-len(badsymbols))
 		for i := range value {
 			if slices.Contains(badsymbols, i) {
@@ -175,7 +235,7 @@ func (ca customAnalyzer) checkStringLiteral(pass *analysis.Pass, lit *ast.BasicL
 	}
 
 	if *isFirst {
-		if unicode.IsUpper(rune(value[0])) {
+		if ca.checkLowercase && unicode.IsUpper(rune(value[0])) {
 			pass.Report(analysis.Diagnostic{
 				Pos:     lit.Pos(),
 				End:     lit.End(),
@@ -197,16 +257,21 @@ func (ca customAnalyzer) checkStringLiteral(pass *analysis.Pass, lit *ast.BasicL
 		*isFirst = false
 	}
 
-	for word := range strings.FieldsSeq(strings.ToLower(value)) {
-		for _, kw := range ca.sensitiveKeywords {
-			if strings.Contains(word, kw) && !slices.Contains(ca.kwWhitelist, word) {
-				pass.Reportf(lit.Pos(), "log message contains potentially sensitive data: %s", word)
+	if ca.checkNoSensitiveData {
+		for word := range strings.FieldsSeq(strings.ToLower(value)) {
+			for _, kw := range ca.sensitiveKeywords {
+				if strings.Contains(word, kw) && !slices.Contains(ca.kwWhitelist, word) {
+					pass.Reportf(lit.Pos(), "log message contains potentially sensitive data: %s", word)
+				}
 			}
 		}
 	}
 }
 
-func (ca customAnalyzer) checkIdentifier(pass *analysis.Pass, ident *ast.Ident) {
+func (ca *customAnalyzer) checkIdentifier(pass *analysis.Pass, ident *ast.Ident) {
+	if !ca.checkNoSensitiveData {
+		return
+	}
 	name := strings.ToLower(ident.Name)
 
 	for _, kw := range ca.sensitiveKeywords {
@@ -233,26 +298,8 @@ func (ca customAnalyzer) checkIdentifier(pass *analysis.Pass, ident *ast.Ident) 
 	}
 }
 
-func (ca customAnalyzer) checkCall(pass *analysis.Pass, call *ast.CallExpr, isFirst *bool) {
+func (ca *customAnalyzer) checkCall(pass *analysis.Pass, call *ast.CallExpr, isFirst *bool) {
 	for _, arg := range call.Args {
 		ca.checkArgument(pass, arg, isFirst)
 	}
 }
-
-// render returns the pretty-print of the given node
-// func render(fset *token.FileSet, x any) string {
-// 	var buf bytes.Buffer
-// 	if err := printer.Fprint(&buf, fset, x); err != nil {
-// 		panic(err)
-// 	}
-// 	return buf.String()
-// }
-
-// func isEnglish(s string) bool {
-// 	for i := 0; i < len(s); i++ {
-// 		if s[i] > unicode.MaxASCII {
-// 			return false
-// 		}
-// 	}
-// 	return true
-// }
