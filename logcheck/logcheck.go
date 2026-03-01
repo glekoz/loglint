@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -62,7 +64,11 @@ func NewAnalyzer() *analysis.Analyzer {
 }
 
 func (ca *customAnalyzer) applyConfig() error {
-	cfg, err := loadConfig(ca.configPath)
+	return ca.applyConfigFrom(ca.configPath)
+}
+
+func (ca *customAnalyzer) applyConfigFrom(path string) error {
+	cfg, err := loadConfig(path)
 	if err != nil {
 		return err
 	}
@@ -95,8 +101,12 @@ func (ca *customAnalyzer) applyConfig() error {
 
 func (ca *customAnalyzer) run(pass *analysis.Pass) (any, error) {
 	ca.once.Do(func() {
-		if ca.configPath != "" {
-			ca.configErr = ca.applyConfig()
+		path := ca.configPath
+		if path == "" {
+			path = findConfig(pass)
+		}
+		if path != "" {
+			ca.configErr = ca.applyConfigFrom(path)
 		}
 	})
 	if ca.configErr != nil {
@@ -135,6 +145,26 @@ func (ca *customAnalyzer) run(pass *analysis.Pass) (any, error) {
 	})
 
 	return nil, nil
+}
+
+func findConfig(pass *analysis.Pass) string {
+	if len(pass.Files) == 0 {
+		return ""
+	}
+	dir := filepath.Dir(pass.Fset.Position(pass.Files[0].Pos()).Filename)
+	for {
+		for _, name := range []string{".loglint.yml", ".loglint.yaml"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				return filepath.Join(dir, name)
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
 }
 
 func (ca *customAnalyzer) isValidLogger(o types.Object) bool {
