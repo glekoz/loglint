@@ -1,0 +1,31 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - loglint
+  settings:
+    custom:
+      loglint:
+        type: "module"
+        description: Checks logging message conventions (lowercase, English-only, no special symbols, no sensitive data)
+        original-url: github.com/glekoz/loglint
+        settings:
+          rules:
+            lowercase: true
+            english_only: true
+            no_special_symbols: true
+            no_sensitive_data: true
+          sensitive_keywords:
+            - password
+            - secret
+            - token
+            - key
+            - credential
+            - auth
+            - login
+            - pass
+            - pwd
+          keywords_whitelist: []
+          symbols_whitelist: []
+          
