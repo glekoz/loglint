@@ -69,6 +69,46 @@ log.Debug("api request completed")
 | `log/slog` | `Debug`, `DebugContext`, `Error`, `ErrorContext`, `Info`, `InfoContext`, `Warn`, `WarnContext` |
 | `go.uber.org/zap` | `Debug`, `DPanic`, `Error`, `Fatal`, `Info`, `Panic`, `Warn` |
 
+Custom loggers can be added via [config file](#loglint-yml----for-standalone-binary).
+
+---
+
+## Suggested fixes
+
+For some violations loglint provides an **automatic fix** that editors and tools can apply directly.
+
+| Rule | Fix |
+|------|-----|
+| Uppercase first letter | Converts the entire message to lowercase |
+| Non-alphanumeric symbol | Removes all offending characters from the message |
+| Sensitive variable in concatenation | Replaces the variable with the literal `"credentials removed"` |
+
+Fixes are applied automatically in editors with `gopls` support (VS Code, GoLand, etc.) via the quick-fix menu, or from the command line:
+
+```bash
+# standalone binary
+loglint -fix ./...
+
+# custom golangci-lint binary
+./custom-gcl run --fix ./...
+```
+
+Example:
+
+```go
+// Before
+slog.Info("Starting server!")
+// After (fix: convert first letter to lowercase + remove non-alphanumeric symbol)
+slog.Info("starting server")
+
+// Before
+slog.Warn("retrying" + password)
+// After (fix: remove sensitive variable)
+slog.Warn("retrying" + "credentials removed")
+```
+
+> Fixes for sensitive data in string literals (e.g. `"user password: ..."`) and non-English characters are reported as diagnostics only — no automatic fix is provided, as the correct replacement depends on context.
+
 ---
 
 ## Installation
